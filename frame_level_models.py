@@ -294,7 +294,7 @@ class GruRcn:
         conv2 = self.conv_layer(pool1, outFilterSize*2, outFilterSize*4, "conv2")
         pool2 = self.max_pool(conv2, 'pool2')
 
-        rcn3, state3 = self.rcn_layer(pool2, outFilterSize*4, outFilterSize*8, "rcn4")
+        rcn3, state3 = self.rcn_layer(pool2, outFilterSize*4, outFilterSize*8, "rcn3")
         fc3 = self.avgpool_fc_layer(state3, vocab_size, "3")
         
         fcSum = tf.add_n(inputs=[fc0, fc1, fc2, fc3], name="fc_sum")
