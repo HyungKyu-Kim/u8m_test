@@ -229,7 +229,7 @@ class LstmModel(models.BaseModel):
     outputs, state = tf.nn.dynamic_rnn(stacked_lstm, model_input,
                                        sequence_length=num_frames,
                                        dtype=tf.float32)
-
+    
     aggregated_model = getattr(video_level_models,
                                FLAGS.video_level_classifier_model)
 
@@ -277,35 +277,38 @@ class GruRcn:
             self.__poolkernelSize = [2, 2]
             self.__poolStrideSize = [2, 2]
         
-        rcn1, state1 = self.rcn_layer(reshapedInput, 1, 8, "rcn1")
-        out1 = self.makeOutput(state1, vocab_size, "1")
-        conv1 = self.conv_layer(reshapedInput, 1, 8, "conv1")
+        outFilterSize = 8
+        
+        rcn0, state0 = self.rcn_layer(reshapedInput, 1, outFilterSize, "rcn0")
+        fc0 = self.avgpool_fc_layer(state0, vocab_size, "0")
+        conv0 = self.conv_layer(reshapedInput, 1, outFilterSize, "conv0")
+        pool0 = self.max_pool(conv0, 'pool0')
+        
+        rcn1, state1 = self.rcn_layer(pool0, outFilterSize, outFilterSize*2, "rcn1")
+        fc1 = self.avgpool_fc_layer(state1, vocab_size, "1")
+        conv1 = self.conv_layer(pool0, outFilterSize, outFilterSize*2, "conv1")
         pool1 = self.max_pool(conv1, 'pool1')
-
-        rcn2, state2 = self.rcn_layer(pool1, 8, 16, "rcn2")
-        out2 = self.makeOutput(state2, vocab_size, "2")
-        conv2 = self.conv_layer(pool1, 8, 16, "conv2")
+        
+        rcn2, state2 = self.rcn_layer(pool1, outFilterSize*2, outFilterSize*4, "rcn2")
+        fc2 = self.avgpool_fc_layer(state2, vocab_size, "2")
+        conv2 = self.conv_layer(pool1, outFilterSize*2, outFilterSize*4, "conv2")
         pool2 = self.max_pool(conv2, 'pool2')
 
-        rcn3, state3 = self.rcn_layer(pool2, 16, 32, "rcn3")
-        out3 = self.makeOutput(state3, vocab_size, "3")
-        conv3 = self.conv_layer(pool2, 16, 32, "conv3")
+        rcn3, state3 = self.rcn_layer(pool2, outFilterSize*4, outFilterSize*4, "rcn3")
+        fc3 = self.avgpool_fc_layer(state3, vocab_size, "3")
+        conv3 = self.conv_layer(pool2, outFilterSize*4, outFilterSize*4, "conv3")
         pool3 = self.max_pool(conv3, 'pool3')
 
-        rcn4, state4 = self.rcn_layer(pool3, 32, 32, "rcn4")
-        out4 = self.makeOutput(state4, vocab_size, "4")
-        conv4 = self.conv_layer(pool3, 32, 32, "conv4")
-        pool4 = self.max_pool(conv4, 'pool4')
-
-        rcn5, state5 = self.rcn_layer(pool4, 32, 64, "rcn5")
-        out5 = self.makeOutput(state5, vocab_size, "5")
+        rcn4, state4 = self.rcn_layer(pool3, outFilterSize*4, outFilterSize*8, "rcn4")
+        fc4 = self.avgpool_fc_layer(state4, vocab_size, "4")
         
-        sumOut = tf.add_n(inputs=[out1, out2, out3, out4, out5], name="sum")
-        predict = tf.div(sumOut, 5, name="divide") 
-
+        fcSum = tf.add_n(inputs=[fc0, fc1, fc2, fc3, fc4], name="fc_sum")
+        divSum = tf.div(fcSum, 5, name="divide") 
+        
+        predict = tf.nn.softmax(divSum, name="softmax") 
         return {"predictions": predict}
 
-    def makeOutput(self, state, vocab_size, i):
+    def avgpool_fc_layer(self, state, vocab_size, i):
         representation = self.avg_pool_to_size1(state, "gap"+i)
         score = slim.fully_connected(
              representation, vocab_size, 
@@ -313,8 +316,7 @@ class GruRcn:
              biases_initializer=None,
              weights_regularizer=slim.l2_regularizer(1e-8),
              scope="fc"+i)
-        output = tf.nn.softmax(score)
-        output = tf.reshape(output, [-1, vocab_size])
+        output = tf.reshape(score, [-1, vocab_size])
         return output
     
     def last_frame_layer(self, bottom, name):
@@ -400,3 +402,4 @@ class GruRcn:
             initial_bias = tf.ones([out_size], dtype=tf.float32)
             biases = self.get_var(initial_bias, name + "_biases", True)
         return weights, biases
+    
