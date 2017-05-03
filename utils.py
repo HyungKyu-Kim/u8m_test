@@ -19,19 +19,19 @@ import numpy
 import tensorflow as tf
 from tensorflow import logging
 
-import matplotlib.pyplot as plt
-def showFrames(video_data, h, w):
-    fig, axes = plt.subplots(1,3)
-    fig.set_size_inches(30,40)
-    
-    for i, ax in enumerate(axes.flat):
-        title = "image:",i/3, " channel:", i%3
-        ax.set_title(title, fontsize=10)
-        ax.imshow(video_data[i/3,:,:,i%3].reshape(h,w), cmap='gray', interpolation='nearest')
-        ax.set_xticks([])
-        ax.set_yticks([])
-    plt.tight_layout()
-    plt.show()
+# import matplotlib.pyplot as plt
+# def showFrames(video_data, h, w):
+#     fig, axes = plt.subplots(1,3)
+#     fig.set_size_inches(30,40)
+#     
+#     for i, ax in enumerate(axes.flat):
+#         title = "image:",i/3, " channel:", i%3
+#         ax.set_title(title, fontsize=10)
+#         ax.imshow(video_data[i/3,:,:,i%3].reshape(h,w), cmap='gray', interpolation='nearest')
+#         ax.set_xticks([])
+#         ax.set_yticks([])
+#     plt.tight_layout()
+#     plt.show()
 
 def Dequantize(feat_vector, max_quantized_value=2, min_quantized_value=-2):
   """Dequantize the feature from the byte format to the float format.
