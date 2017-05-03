@@ -294,16 +294,11 @@ class GruRcn:
         conv2 = self.conv_layer(pool1, outFilterSize*2, outFilterSize*4, "conv2")
         pool2 = self.max_pool(conv2, 'pool2')
 
-        rcn3, state3 = self.rcn_layer(pool2, outFilterSize*4, outFilterSize*4, "rcn3")
-        fc3 = self.avgpool_fc_layer(state3, vocab_size, "3")
-        conv3 = self.conv_layer(pool2, outFilterSize*4, outFilterSize*4, "conv3")
-        pool3 = self.max_pool(conv3, 'pool3')
-
-        rcn4, state4 = self.rcn_layer(pool3, outFilterSize*4, outFilterSize*8, "rcn4")
-        fc4 = self.avgpool_fc_layer(state4, vocab_size, "4")
+        rcn3, state3 = self.rcn_layer(pool2, outFilterSize*4, outFilterSize*8, "rcn4")
+        fc3 = self.avgpool_fc_layer(state3, vocab_size, "4")
         
-        fcSum = tf.add_n(inputs=[fc0, fc1, fc2, fc3, fc4], name="fc_sum")
-        divSum = tf.div(fcSum, 5, name="divide") 
+        fcSum = tf.add_n(inputs=[fc0, fc1, fc2, fc3], name="fc_sum")
+        divSum = tf.div(fcSum, 4, name="divide") 
         
         predict = tf.nn.softmax(divSum, name="softmax") 
         return {"predictions": predict}
