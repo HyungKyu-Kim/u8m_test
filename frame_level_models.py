@@ -132,6 +132,7 @@ class DbofModel(models.BaseModel):
     else:
       model_input = utils.SampleRandomSequence(model_input, num_frames,
                                                iterations)
+
     max_frames = model_input.get_shape().as_list()[1]
     feature_size = model_input.get_shape().as_list()[2]
     reshaped_input = tf.reshape(model_input, [-1, feature_size])
@@ -220,16 +221,16 @@ class LstmModel(models.BaseModel):
     stacked_lstm = tf.contrib.rnn.MultiRNNCell(
             [
                 tf.contrib.rnn.BasicLSTMCell(
-                    lstm_size, forget_bias=1.0)
+                    lstm_size, forget_bias=1.0, state_is_tuple=False)
                 for _ in range(number_of_layers)
-                ])
+                ], state_is_tuple=False)
 
     loss = 0.0
 
     outputs, state = tf.nn.dynamic_rnn(stacked_lstm, model_input,
                                        sequence_length=num_frames,
                                        dtype=tf.float32)
-    
+
     aggregated_model = getattr(video_level_models,
                                FLAGS.video_level_classifier_model)
 
@@ -277,33 +278,35 @@ class GruRcn:
             self.__poolkernelSize = [2, 2]
             self.__poolStrideSize = [2, 2]
         
-        outFilterSize = 8
-        
-        rcn0, state0 = self.rcn_layer(reshapedInput, 1, outFilterSize, "rcn0")
-        fc0 = self.avgpool_fc_layer(state0, vocab_size, "0")
-        conv0 = self.conv_layer(reshapedInput, 1, outFilterSize, "conv0")
-        pool0 = self.max_pool(conv0, 'pool0')
-        
-        rcn1, state1 = self.rcn_layer(pool0, outFilterSize, outFilterSize*2, "rcn1")
-        fc1 = self.avgpool_fc_layer(state1, vocab_size, "1")
-        conv1 = self.conv_layer(pool0, outFilterSize, outFilterSize*2, "conv1")
+        rcn1, state1 = self.rcn_layer(reshapedInput, 1, 8, "rcn1")
+        out1 = self.makeOutput(state1, vocab_size, "1")
+        conv1 = self.conv_layer(reshapedInput, 1, 8, "conv1")
         pool1 = self.max_pool(conv1, 'pool1')
-        
-        rcn2, state2 = self.rcn_layer(pool1, outFilterSize*2, outFilterSize*4, "rcn2")
-        fc2 = self.avgpool_fc_layer(state2, vocab_size, "2")
-        conv2 = self.conv_layer(pool1, outFilterSize*2, outFilterSize*4, "conv2")
+
+        rcn2, state2 = self.rcn_layer(pool1, 8, 16, "rcn2")
+        out2 = self.makeOutput(state2, vocab_size, "2")
+        conv2 = self.conv_layer(pool1, 8, 16, "conv2")
         pool2 = self.max_pool(conv2, 'pool2')
 
-        rcn3, state3 = self.rcn_layer(pool2, outFilterSize*4, outFilterSize*8, "rcn3")
-        fc3 = self.avgpool_fc_layer(state3, vocab_size, "3")
+        rcn3, state3 = self.rcn_layer(pool2, 16, 32, "rcn3")
+        out3 = self.makeOutput(state3, vocab_size, "3")
+        conv3 = self.conv_layer(pool2, 16, 32, "conv3")
+        pool3 = self.max_pool(conv3, 'pool3')
+
+        rcn4, state4 = self.rcn_layer(pool3, 32, 32, "rcn4")
+        out4 = self.makeOutput(state4, vocab_size, "4")
+        conv4 = self.conv_layer(pool3, 32, 32, "conv4")
+        pool4 = self.max_pool(conv4, 'pool4')
+
+        rcn5, state5 = self.rcn_layer(pool4, 32, 64, "rcn5")
+        out5 = self.makeOutput(state5, vocab_size, "5")
         
-        fcSum = tf.add_n(inputs=[fc0, fc1, fc2, fc3], name="fc_sum")
-        divSum = tf.div(fcSum, 4, name="divide") 
-        
-        predict = tf.nn.softmax(divSum, name="softmax") 
+        sumOut = tf.add_n(inputs=[out1, out2, out3, out4, out5], name="sum")
+        predict = tf.div(sumOut, 5, name="divide") 
+
         return {"predictions": predict}
 
-    def avgpool_fc_layer(self, state, vocab_size, i):
+    def makeOutput(self, state, vocab_size, i):
         representation = self.avg_pool_to_size1(state, "gap"+i)
         score = slim.fully_connected(
              representation, vocab_size, 
@@ -311,7 +314,8 @@ class GruRcn:
              biases_initializer=None,
              weights_regularizer=slim.l2_regularizer(1e-8),
              scope="fc"+i)
-        output = tf.reshape(score, [-1, vocab_size])
+        output = tf.nn.softmax(score)
+        output = tf.reshape(output, [-1, vocab_size])
         return output
     
     def last_frame_layer(self, bottom, name):
@@ -329,6 +333,11 @@ class GruRcn:
     def max_pool(self, bottom, name):
         with tf.variable_scope(name):
             def _inner_max_pool(bott):
+#                 return tf.nn.max_pool(bott,
+#                                       ksize=[1, 1, 2, 1],
+#                                       strides=[1, 1, 2, 1],
+#                                       padding='SAME',
+#                                       name=name)
                 return slim.max_pool2d(inputs=bott, 
                                        kernel_size=self.__poolKernelSize,
                                        stride=self.__poolStrideSize,
@@ -341,12 +350,18 @@ class GruRcn:
             return output
 
     def max_single_pool(self, bottom, name):
+#         return tf.nn.max_pool(bottom, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name=name)
         return slim.max_pool2d(bottom, kernel_size=self.__poolKernelSize, stride=self.__poolStrideSize, padding='SAME', scope=name)
 
     def conv_layer(self, bottom, in_channels, out_channels, name):
         with tf.variable_scope(name):
+#             filter, conv_biases = self.get_conv_var(1, 3, in_channels, out_channels, name)
+#             filter = tf.truncated_normal([1, 3, in_channels, out_channels], 0.0, 0.01)
 
             def _inner_conv(bott):
+#                 conv = tf.nn.conv2d(bott, filt, [1, 1, 1, 1], padding='SAME')
+#                 bias = tf.nn.bias_add(conv, conv_biases)
+#                 relu = tf.nn.relu(bias)
                 return slim.conv2d(inputs=bott, 
                                    num_outputs=out_channels, 
                                    kernel_size=self.__convKernelSize,
@@ -372,12 +387,22 @@ class GruRcn:
             _, _, N, H, C = bottom.get_shape().as_list()
             input_size = (N, H, C)
             num_outputs = out_channels
+#             dict_name = name.replace("rcn", "conv")
+#             weight_initializers = {}
+#             if self.data_dict is not None and dict_name in self.data_dict:
+#                 filters = self.data_dict[dict_name][0]
+#                 biases = self.data_dict[dict_name][1]
+#                 weight_initializers['WConv'] = init_ops.constant_initializer(filters)
+#                 weight_initializers['c_biases'] = init_ops.constant_initializer(biases)
+#             cell = GruRcnCell(input_size, num_outputs, 1, 3, [1, 1], "SAME", 1, 3, weight_initializers=weight_initializers)
             cell = GruRcnCell(input_size, num_outputs, self.__convKernelSize, [1, 1], "SAME", self.__convKernelSize)
             output, state = dynamic_rcn(cell, bottom, sequence_length=self.seq_length, dtype=tf.float32)
             return output, state
 
     def get_conv_var(self, filter_size_h, filter_size_w, in_channels, out_channels, name):
         if self.data_dict is not None and name in self.data_dict:
+#             filters = self.get_var(, , False)
+#             biases = self.get_var(self.data_dict[name][1], name + "_biases", False)
             filters = tf.constant(value=self.data_dict[name][0], name = name + "_filters")
             biases = tf.constant(value=self.data_dict[name][1], name = name + "_biases")
         else:
@@ -385,6 +410,8 @@ class GruRcn:
             initial_bias = tf.ones([out_channels], dtype=tf.float32)
             filters = tf.get_variable(name=name + "_filters", initializer=initial_filter)
             biases = tf.get_variable(name=name + "_biases", initializer=initial_bias)
+#             filters = self.get_var(initial_filter, name + "_filters", True)
+#             biases = self.get_var(initial_bias, name + "_biases", True)
         return filters, biases
 
     def get_fc_var(self, in_size, out_size, name):
@@ -398,3 +425,9 @@ class GruRcn:
             biases = self.get_var(initial_bias, name + "_biases", True)
         return weights, biases
     
+#     def get_var(self, initial_value, var_name, trainable):
+#         if trainable:
+#             var = tf.Variable(initial_value, name=var_name)
+#         else:
+#             var = tf.constant(initial_value, dtype=tf.float32, name=var_name)
+#         return var
