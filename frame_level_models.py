@@ -25,7 +25,7 @@ import tensorflow.contrib.slim as slim
 from tensorflow import flags
 
 from tensorflow.python.ops import init_ops
-from rcn import dynamic_rcn, GruRcnCell
+from rcn import dynamic_rcn, GruRcnCell, StackedGruRcnCell, dynamic_stacked_rcn
 
 FLAGS = flags.FLAGS
 flags.DEFINE_integer("iterations", 30,
@@ -132,7 +132,6 @@ class DbofModel(models.BaseModel):
     else:
       model_input = utils.SampleRandomSequence(model_input, num_frames,
                                                iterations)
-
     max_frames = model_input.get_shape().as_list()[1]
     feature_size = model_input.get_shape().as_list()[2]
     reshaped_input = tf.reshape(model_input, [-1, feature_size])
@@ -217,25 +216,29 @@ class LstmModel(models.BaseModel):
     """
     lstm_size = FLAGS.lstm_cells
     number_of_layers = FLAGS.lstm_layers
-
+    print ("number_of_layers ",number_of_layers)
     stacked_lstm = tf.contrib.rnn.MultiRNNCell(
             [
                 tf.contrib.rnn.BasicLSTMCell(
-                    lstm_size, forget_bias=1.0, state_is_tuple=False)
+                    lstm_size, forget_bias=1.0)
                 for _ in range(number_of_layers)
-                ], state_is_tuple=False)
+                ])
 
     loss = 0.0
 
+    print ("stacked_lstm ",stacked_lstm)
+    print ("model_input ",model_input)
+    print ("num_frames ",num_frames)
     outputs, state = tf.nn.dynamic_rnn(stacked_lstm, model_input,
                                        sequence_length=num_frames,
                                        dtype=tf.float32)
-
+    
     aggregated_model = getattr(video_level_models,
                                FLAGS.video_level_classifier_model)
-
+    print "state", state
+    print "state[-1].h", state[-1].h
     return aggregated_model().create_model(
-        model_input=state,
+        model_input=state[-1].h,
         vocab_size=vocab_size,
         **unused_params)
 
@@ -244,19 +247,26 @@ VGG_MEAN = [103.939, 116.779, 123.68]
 class GruRcn:
 
     def create_model(self, model_input, vocab_size, num_frames, **unused_params):
-        """
-        load variable from npy to build the VGG
-        :param model_input: [batch, max framse, features]
-        :param train_mode: a bool tensor, usually a placeholder: if True, dropout will be turned on
-        
-        """
+        """Creates a model which uses a GruRcn to represent the video.
+
+    Args:
+      model_input: A 'batch_size' x 'max_frames' x 'num_features' matrix of
+                   input features.
+      vocab_size: The number of classes in the dataset.
+      num_frames: A vector of length 'batch' which indicates the number of
+           frames for each video (before padding).
+
+    Returns:
+      A dictionary with a tensor containing the probability predictions of the
+      model in the 'predictions' key. The dimensions of the tensor are
+      'batch_size' x 'num_classes'.
+    """
 
         self.data_dict = None
         self.seq_length = num_frames
         self.__convKernelSize = None
         self.__poolKernelSize = None
         self.__poolStrideSize = None
-        train_mode = True
         
         max_frames = model_input.get_shape().as_list()[1]   # 300
         inputWidth = model_input.get_shape().as_list()[2]   # 1024
@@ -278,45 +288,38 @@ class GruRcn:
             self.__poolkernelSize = [2, 2]
             self.__poolStrideSize = [2, 2]
         
-        rcn1, state1 = self.rcn_layer(reshapedInput, 1, 8, "rcn1")
-        out1 = self.makeOutput(state1, vocab_size, "1")
-        conv1 = self.conv_layer(reshapedInput, 1, 8, "conv1")
-        pool1 = self.max_pool(conv1, 'pool1')
-
-        rcn2, state2 = self.rcn_layer(pool1, 8, 16, "rcn2")
-        out2 = self.makeOutput(state2, vocab_size, "2")
-        conv2 = self.conv_layer(pool1, 8, 16, "conv2")
-        pool2 = self.max_pool(conv2, 'pool2')
-
-        rcn3, state3 = self.rcn_layer(pool2, 16, 32, "rcn3")
-        out3 = self.makeOutput(state3, vocab_size, "3")
-        conv3 = self.conv_layer(pool2, 16, 32, "conv3")
-        pool3 = self.max_pool(conv3, 'pool3')
-
-        rcn4, state4 = self.rcn_layer(pool3, 32, 32, "rcn4")
-        out4 = self.makeOutput(state4, vocab_size, "4")
-        conv4 = self.conv_layer(pool3, 32, 32, "conv4")
-        pool4 = self.max_pool(conv4, 'pool4')
-
-        rcn5, state5 = self.rcn_layer(pool4, 32, 64, "rcn5")
-        out5 = self.makeOutput(state5, vocab_size, "5")
+        outFilterSize = 4
+         
+        rcn0, state0 = self.rcn_layer(reshapedInput, outFilterSize, "rcn0")
+#         avgpool3 = self.avg_pool_to_size1(state3, "avg0")
+        fc0 = self.fc_layer(state0, vocab_size, "fc0")
         
-        sumOut = tf.add_n(inputs=[out1, out2, out3, out4, out5], name="sum")
-        predict = tf.div(sumOut, 5, name="divide") 
+        conv0 = self.conv_layer(reshapedInput, 1, outFilterSize, "conv0")
+        pool0 = self.max_pool(conv0, 'pool0')
+        rcnpool0 = self.max_pool(rcn0, 'rcnpool0')
+#  
+#         rcn1, state1 = self.rcn_layer(pool0, outFilterSize*2, "rcn1")
+        rcn1, state1 = self.stacked_rcn_layer(pool0, rcnpool0, outFilterSize*2, "rcn1")
+        fc1 = self.fc_layer(state1, vocab_size, "fc1")
+        
+#         conv1 = self.conv_layer(pool0, outFilterSize, outFilterSize*2, "conv1")
+#         pool1 = self.max_pool(conv1, 'pool1')
+#            
+#         rcn2, state2 = self.rcn_layer(pool1, outFilterSize*4, "rcn2")
+#         fc2 = self.fc_layer(state2, vocab_size, "fc2")
 
+#         fcSum = tf.add_n(inputs=[fc0, fc1], name="fc_sum")
+#         divSum = tf.div(fcSum, 2, name="divide")
+
+        predict = tf.nn.softmax(fc0, name="softmax") 
         return {"predictions": predict}
-
-    def makeOutput(self, state, vocab_size, i):
-        representation = self.avg_pool_to_size1(state, "gap"+i)
-        score = slim.fully_connected(
-             representation, vocab_size, 
-             activation_fn=None,
-             biases_initializer=None,
-             weights_regularizer=slim.l2_regularizer(1e-8),
-             scope="fc"+i)
-        output = tf.nn.softmax(score)
-        output = tf.reshape(output, [-1, vocab_size])
-        return output
+#         aggregated_model = getattr(video_level_models,
+#                                FLAGS.video_level_classifier_model)
+#          
+#         return aggregated_model().create_model(
+#             model_input=x,
+#             vocab_size=vocab_size,
+#             **unused_params)
     
     def last_frame_layer(self, bottom, name):
         number = tf.range(0, tf.shape(self.seq_length)[0])
@@ -325,56 +328,54 @@ class GruRcn:
     
     def avg_pool_to_size1(self, bottom, name):
         with tf.variable_scope(name):
-            _, bottomHeight, bottomWidth, _ = bottom.get_shape().as_list()
-            return slim.avg_pool2d(inputs=bottom, 
-                                   kernel_size=[bottomHeight, bottomWidth],
-                                   scope=name)
+            _, _bottomHeight, _bottomWidth, _ = bottom.get_shape().as_list()
+            return tf.nn.avg_pool(value=bottom, 
+                                  ksize=[1, _bottomHeight, _bottomWidth, 1], 
+                                  strides=[1, _bottomHeight, _bottomWidth, 1], 
+                                  padding='SAME',
+                                  name=name)
             
     def max_pool(self, bottom, name):
         with tf.variable_scope(name):
+            _kH, _kW = self.__poolKernelSize
+            _sH, _sW = self.__poolStrideSize
             def _inner_max_pool(bott):
-#                 return tf.nn.max_pool(bott,
-#                                       ksize=[1, 1, 2, 1],
-#                                       strides=[1, 1, 2, 1],
-#                                       padding='SAME',
-#                                       name=name)
-                return slim.max_pool2d(inputs=bott, 
-                                       kernel_size=self.__poolKernelSize,
-                                       stride=self.__poolStrideSize,
-                                       padding='SAME',
-                                       scope=name)
+                return tf.nn.max_pool(bott,
+                                      ksize=[1, _kH, _kW, 1],
+                                      strides=[1, _sH, _sW, 1],
+                                      padding='SAME',
+                                      name=name)
 
-            bottoms = tf.unstack(bottom, axis=0)
-            output = tf.stack([_inner_max_pool(bott) for bott in bottoms], axis=0)
+            _bottoms = tf.unstack(bottom, axis=0)
+            output = tf.stack([_inner_max_pool(bott) for bott in _bottoms], axis=0)
 
             return output
 
     def max_single_pool(self, bottom, name):
-#         return tf.nn.max_pool(bottom, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name=name)
-        return slim.max_pool2d(bottom, kernel_size=self.__poolKernelSize, stride=self.__poolStrideSize, padding='SAME', scope=name)
+        return tf.nn.max_pool(bottom, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name=name)
 
     def conv_layer(self, bottom, in_channels, out_channels, name):
         with tf.variable_scope(name):
-#             filter, conv_biases = self.get_conv_var(1, 3, in_channels, out_channels, name)
-#             filter = tf.truncated_normal([1, 3, in_channels, out_channels], 0.0, 0.01)
+#             filt, conv_biases = self.get_conv_var(self.__convKernelSize, in_channels, out_channels, name)
+            filter_size_h, filter_size_w = self.__convKernelSize
+            
+            filt = tf.get_variable(name=name + "_filters", shape=[filter_size_h, filter_size_w, in_channels, out_channels], initializer=init_ops.random_normal_initializer(stddev=0.01))
+            conv_biases = tf.get_variable(name=name + "_biases", shape=[out_channels], initializer=init_ops.random_normal_initializer(stddev=0.01)) 
 
             def _inner_conv(bott):
-#                 conv = tf.nn.conv2d(bott, filt, [1, 1, 1, 1], padding='SAME')
-#                 bias = tf.nn.bias_add(conv, conv_biases)
-#                 relu = tf.nn.relu(bias)
-                return slim.conv2d(inputs=bott, 
-                                   num_outputs=out_channels, 
-                                   kernel_size=self.__convKernelSize,
-                                   scope = name)
+                conv = tf.nn.conv2d(bott, filt, [1, 1, 1, 1], padding='SAME')
+                bias = tf.nn.bias_add(conv, conv_biases)
+                relu = tf.nn.relu(bias)
+                return relu
 
-            bottoms = tf.unstack(bottom, axis=0)
-            output = tf.stack([_inner_conv(bott) for bott in bottoms], axis=0)
+            _bottoms = tf.unstack(bottom, axis=0)
+            output = tf.stack([_inner_conv(bott) for bott in _bottoms], axis=0)
 
             return output
 
     def conv_single_layer(self, bottom, in_channels, out_channels, name):
         with tf.variable_scope(name):
-            filt, conv_biases = self.get_conv_var(1, 3, in_channels, out_channels, name)
+            filt, conv_biases = self.get_conv_var(self.__convKernelSize, in_channels, out_channels, name)
 
             conv = tf.nn.conv2d(bottom, filt, [1, 1, 1, 1], padding='SAME')
             bias = tf.nn.bias_add(conv, conv_biases)
@@ -382,52 +383,70 @@ class GruRcn:
 
             return relu
 
-    def rcn_layer(self, bottom, in_channels, out_channels, name):
+    def rcn_layer(self, bottom, out_channels, name):
         with tf.variable_scope(name):
             _, _, N, H, C = bottom.get_shape().as_list()
             input_size = (N, H, C)
             num_outputs = out_channels
-#             dict_name = name.replace("rcn", "conv")
-#             weight_initializers = {}
+            dict_name = name.replace("rcn", "conv")
 #             if self.data_dict is not None and dict_name in self.data_dict:
 #                 filters = self.data_dict[dict_name][0]
 #                 biases = self.data_dict[dict_name][1]
 #                 weight_initializers['WConv'] = init_ops.constant_initializer(filters)
 #                 weight_initializers['c_biases'] = init_ops.constant_initializer(biases)
-#             cell = GruRcnCell(input_size, num_outputs, 1, 3, [1, 1], "SAME", 1, 3, weight_initializers=weight_initializers)
-            cell = GruRcnCell(input_size, num_outputs, self.__convKernelSize, [1, 1], "SAME", self.__convKernelSize)
+            cell = GruRcnCell(input_size, num_outputs, self.__convKernelSize, [1, 1, 1, 1], "SAME", self.__convKernelSize)
+#             cell = GruRcnCell(input_size, num_outputs, 1, 3, [1, 1, 1, 1], "SAME", 1, 3)
             output, state = dynamic_rcn(cell, bottom, sequence_length=self.seq_length, dtype=tf.float32)
             return output, state
+        
+    def stacked_rcn_layer(self, bottom, prevState, out_channels, name):
+        with tf.variable_scope(name):
+            _, _, N, H, C = bottom.get_shape().as_list()
+            input_size = (N, H, C)
+            num_outputs = out_channels
+            dict_name = name.replace("rcn", "conv")
+#             if self.data_dict is not None and dict_name in self.data_dict:
+#                 filters = self.data_dict[dict_name][0]
+#                 biases = self.data_dict[dict_name][1]
+#                 weight_initializers['WConv'] = init_ops.constant_initializer(filters)
+#                 weight_initializers['c_biases'] = init_ops.constant_initializer(biases)
+            cell = StackedGruRcnCell(input_size, num_outputs, self.__convKernelSize, [1, 1, 1, 1], "SAME", self.__convKernelSize)
+#             cell = GruRcnCell(input_size, num_outputs, 1, 3, [1, 1, 1, 1], "SAME", 1, 3)
+            output, state = dynamic_stacked_rcn(cell, bottom, prevState, sequence_length=self.seq_length, dtype=tf.float32)
+            return output, state
 
-    def get_conv_var(self, filter_size_h, filter_size_w, in_channels, out_channels, name):
+    def fc_layer(self, bottom, out_size, name):
+        with tf.variable_scope(name):
+            _, _height, _width, _channel = bottom.get_shape().as_list() 
+            size = _height*_width*_channel
+            weights = tf.get_variable(name=name + "_weights", shape = [size, out_size], initializer=init_ops.random_normal_initializer(stddev=0.01))
+            biases = tf.get_variable(name=name + "_biases", shape=[out_size], initializer=init_ops.random_normal_initializer(stddev=0.01)) 
+             
+            x = tf.reshape(bottom, [-1, size])
+            fc = tf.nn.bias_add(tf.matmul(x, weights), biases)
+            return fc
+
+        
+    def get_conv_var(self, filter_size, in_channels, out_channels, name):
         if self.data_dict is not None and name in self.data_dict:
-#             filters = self.get_var(, , False)
-#             biases = self.get_var(self.data_dict[name][1], name + "_biases", False)
             filters = tf.constant(value=self.data_dict[name][0], name = name + "_filters")
             biases = tf.constant(value=self.data_dict[name][1], name = name + "_biases")
         else:
+            filter_size_h, filter_size_w = filter_size
             initial_filter = tf.truncated_normal([filter_size_h, filter_size_w, in_channels, out_channels], 0.0, 0.01)
-            initial_bias = tf.ones([out_channels], dtype=tf.float32)
+#             initial_bias = tf.ones([out_channels], dtype=tf.float32)
             filters = tf.get_variable(name=name + "_filters", initializer=initial_filter)
-            biases = tf.get_variable(name=name + "_biases", initializer=initial_bias)
-#             filters = self.get_var(initial_filter, name + "_filters", True)
-#             biases = self.get_var(initial_bias, name + "_biases", True)
+            biases = tf.get_variable(name=name + "_biases", shape=[out_channels], initializer=tf.constant_initializer(0.0))
         return filters, biases
 
     def get_fc_var(self, in_size, out_size, name):
         if self.data_dict is not None and name in self.data_dict:
-            weights = self.get_var(self.data_dict[name][0], name + "_weights", True)
-            biases = self.get_var(self.data_dict[name][1], name + "_biases", True)
+            weights = tf.constant(value=self.data_dict[name][0], name=name + "_weights")
+            biases = tf.constant(value=self.data_dict[name][1], name=name + "_biases")
         else:
             initial_weight = tf.truncated_normal([in_size, out_size], 0.0, 0.01)
-            weights = self.get_var(initial_weight, name + "_weights", True)
-            initial_bias = tf.ones([out_size], dtype=tf.float32)
-            biases = self.get_var(initial_bias, name + "_biases", True)
+            weights = tf.get_variable(name=name + "_weights", initializer=initial_weight)
+#             initial_bias = tf.ones([out_size], dtype=tf.float32)
+            biases = tf.get_variable(name=name + "_biases", shape=[out_size], initializer=tf.constant_initializer(0.0))
         return weights, biases
     
-#     def get_var(self, initial_value, var_name, trainable):
-#         if trainable:
-#             var = tf.Variable(initial_value, name=var_name)
-#         else:
-#             var = tf.constant(initial_value, dtype=tf.float32, name=var_name)
-#         return var
