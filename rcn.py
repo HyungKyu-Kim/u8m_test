@@ -34,31 +34,6 @@ def dynamic_rcn(cell, inputs, **rnn_args):
     output, state = tf.nn.dynamic_rnn(cell, seq_input, **rnn_args)
     return output, state
 
-def dynamic_stacked_rcn(cell, inputs, prevState, **rnn_args):
-    """Creates a recurrent neural network specified by RCNCell `cell`.
-
-    Args:
-        cell: An instance of RCNCell.
-        inputs:
-            A `Tensor` of shape: `[max_time, batch_size, image_height,
-            image_width, chanel_size]`.
-        other args:
-            The same as `dynamic_rnn` function.
-
-    Returns:
-
-    """
-    if not isinstance(cell, RCNCell):
-        raise TypeError("cell must be an instance of RCNCell")
-    rnn_args['time_major'] = True 
-    mergedInputs = tf.stack([inputs, prevState], axis=2)
-    isp = mergedInputs.get_shape().as_list()
-    print "mergedInputs", mergedInputs
-    seq_input = tf.reshape(mergedInputs, shape=[isp[0], -1, isp[2], isp[3] * isp[4] * isp[5]])
-    print "seq_input",seq_input 
-    output, state = tf.nn.dynamic_rnn(cell, seq_input, **rnn_args)
-    return output, state
-
 class RCNCell(RNNCell):
     """To be completed
     """
@@ -189,7 +164,29 @@ class GruRcnCell(RCNCell):
                                 data_format=self._data_format)
         return conv
 
-class StackedGruRcnCell(RCNCell):
+def dynamic_stacked_rcn(cell, mergedInputs, **rnn_args):
+    """Creates a recurrent neural network specified by RCNCell `cell`.
+
+    Args:
+        cell: An instance of RCNCell.
+        inputs:
+            A `Tensor` of shape: `[max_time, batch_size, image_height,
+            image_width, chanel_size]`.
+        other args:
+            The same as `dynamic_rnn` function.
+
+    Returns:
+
+    """
+    if not isinstance(cell, RNNCell):
+        raise TypeError("cell must be an instance of RCNCell")
+    rnn_args['time_major'] = True
+    isp = mergedInputs.get_shape().as_list() 
+    seq_input = tf.reshape(mergedInputs, shape=[isp[0], -1, isp[2] * isp[3] * isp[4] * isp[5]]) 
+    output, state = tf.nn.dynamic_rnn(cell, seq_input, **rnn_args)
+    return output, state
+
+class StackedGruRcnCell(RNNCell):
     """To be completed.
 
     """
@@ -209,10 +206,11 @@ class StackedGruRcnCell(RCNCell):
         self._hh_filter_h_length, self._hh_filter_w_length = hh_filter_size
         self._data_format = data_format
         
-        if data_format == 'NCHW':
-            _, H, W = input_size
-        else:
-            H, W, _ = input_size
+        # (N, M, H, C)
+        if data_format == 'NMCHW':
+            M, _, H, W = input_size
+        else:   # NMHWC
+            M, H, W, _ = input_size
 #             hS, wS = ih_strides
         _, hS, wS, _ = ih_strides
         if ih_pandding == "SAME":
@@ -246,10 +244,14 @@ class StackedGruRcnCell(RCNCell):
         """Get the shape of output
         """
         return tf.TensorShape(self._state_size)
-
-    def call(self, mergedInputs, state, scope=None):
-        print "call",mergedInputs
-        inputs, prevState = tf.split(mergedInputs, num_or_size_splits=2, axis=2, name="splitMergedInput")
+    
+    def __call__(self, inputs, state, scope=None):
+        isp = inputs.get_shape().as_list()
+        M, H, W, C = self.input_size # S: Merged input number 
+        assert isp[-1] == M * H * W * C
+        mergedInputs = tf.reshape(inputs, shape=(-1, M, H, W, C))
+        inputs, prevState = tf.unstack(mergedInputs, axis=1, name="unstack")
+        
         with vs.variable_scope(scope or type(self).__name__):  # "GruRcnCell"
             with vs.variable_scope("Gates"):  # Reset gate and update gate.
                 # We start with bias of 1.0.
@@ -260,7 +262,7 @@ class StackedGruRcnCell(RCNCell):
                                  "SAME", init_ops.truncated_normal_initializer(stddev=0.01), scope="UzrConv")
                 
                 pervU_zr = self._conv(prevState, self._num_outputs*2, self._hh_filter_h_length, self._hh_filter_w_length, [1, 1, 1, 1],
-                                 "SAME", init_ops.truncated_normal_initializer(stddev=0.01), scope="UzrConv")
+                                 "SAME", init_ops.truncated_normal_initializer(stddev=0.01), scope="PrevUzrConv")
                 
                 w_z, w_r, w =tf.split(value=w_zrw, num_or_size_splits=3, axis=3, name="w_split")
                 u_z, u_r =tf.split(value=u_zr, num_or_size_splits=2, axis=3, name="u_split")
@@ -291,6 +293,7 @@ class StackedGruRcnCell(RCNCell):
                 c = math_ops.tanh(tf.nn.bias_add(w + u, c_bias))
             new_h = z_gate * state + (1 - z_gate) * c
         return new_h, new_h
+       
 
     def _conv(self, inputs, nb_filter, filter_h_length, filter_w_length, strides,
               padding, weight_initializer, scope=None):
