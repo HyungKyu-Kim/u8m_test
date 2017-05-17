@@ -288,14 +288,14 @@ class GruRcn:
             self.__poolkernelSize = [2, 2]
             self.__poolStrideSize = [2, 2]
         
-        outFilterSize = 16
+        outFilterSize = 32
          
         _, state0 = self.rcn_layer(reshapedInput, outFilterSize, "rcn0")
 #         sep_conv0 = self.separable_conv(state0, outFilterSize, 4, "sep_conv0")
 #         
-#         _, _height, _width, _channel = sep_conv0.get_shape().as_list() 
+#         _, _height, _width, _channel = state0.get_shape().as_list() 
 #         size = _height*_width*_channel
-#         flatten = tf.reshape(sep_conv0, [-1, size])
+#         flatten = tf.reshape(state0, [-1, size])
 #         print flatten 
 #         
 #         aggregated_model = getattr(video_level_models,
@@ -304,14 +304,11 @@ class GruRcn:
 #             model_input=flatten,
 #             vocab_size=vocab_size,
 #             **unused_params)
+#         pool0 = self._maxpool(state0, 'pool0')
         fc0 = self.fc_layer(state0, 1024, "fc0")
         print fc0
-        aggregated_model = getattr(video_level_models,
-                               FLAGS.video_level_classifier_model)
-        return aggregated_model().create_model(
-            model_input=fc0,
-            vocab_size=vocab_size,
-            **unused_params)
+        fc1 = self._fc(fc0, vocab_size, "fc1")
+        print fc1
 #         rcnpool0 = self.max_pool(rcn0, 'rcnpool0')
 # 
 #         rcn1, state1 = self.stacked_rcn_layer(pool0, rcnpool0, outFilterSize*2, "rcn1")
@@ -341,8 +338,8 @@ class GruRcn:
 #         size = _height*_width*_channel
 #         flattenGapSum = tf.reshape(gapSum, [-1, size])
 #         print flattenGapSum
-#         predict = tf.nn.softmax(fc0, name="softmax") 
-#         return {"predictions": predict}
+        predict = tf.nn.softmax(fc1, name="softmax") 
+        return {"predictions": predict}
     
     def last_frame_layer(self, bottom, name):
         number = tf.range(0, tf.shape(self.seq_length)[0])
@@ -477,4 +474,13 @@ class GruRcn:
             print weights
             x = tf.reshape(bottom, [-1, size])
             fc = tf.nn.bias_add(tf.matmul(x, weights), biases)
+            return fc
+        
+    def _fc(self, bottom, out_size, name):
+        with tf.variable_scope(name):
+            _, size = bottom.get_shape().as_list() 
+            weights = tf.get_variable(name=name + "_weights", shape = [size, out_size], initializer=init_ops.random_normal_initializer(stddev=0.01))
+            biases = tf.get_variable(name=name + "_biases", shape=[out_size], initializer=init_ops.random_normal_initializer(stddev=0.01)) 
+            print weights
+            fc = tf.nn.bias_add(tf.matmul(bottom, weights), biases)
             return fc
