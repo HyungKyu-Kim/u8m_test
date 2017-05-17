@@ -288,22 +288,35 @@ class GruRcn:
             self.__poolkernelSize = [2, 2]
             self.__poolStrideSize = [2, 2]
         
-        outFilterSize = 8
+        outFilterSize = 16
          
-        rcn0, state0 = self.rcn_layer(reshapedInput, outFilterSize, "rcn0")
-        sepConv0 = self.separable_conv(state0, outFilterSize, vocab_size, "sep_conv0")
-        gap0 = self.global_avg_pool(sepConv0, vocab_size, "gap0")
-#         print sepConv0
-#         print gap0
-#         fc0 = self.fc_layer(state0, vocab_size, "fc0")
-        
-        conv0 = self.conv_layer(reshapedInput, 1, outFilterSize, "conv0")
-        pool0 = self.max_pool(conv0, 'pool0')
-        rcnpool0 = self.max_pool(rcn0, 'rcnpool0')
-
-        rcn1, state1 = self.stacked_rcn_layer(pool0, rcnpool0, outFilterSize*2, "rcn1")
-        sepConv1 = self.separable_conv(state1, outFilterSize*2, vocab_size, "sep_conv1")
-        gap1 = self.global_avg_pool(sepConv1, vocab_size, "gap1")
+        _, state0 = self.rcn_layer(reshapedInput, outFilterSize, "rcn0")
+#         sep_conv0 = self.separable_conv(state0, outFilterSize, 4, "sep_conv0")
+#         
+#         _, _height, _width, _channel = sep_conv0.get_shape().as_list() 
+#         size = _height*_width*_channel
+#         flatten = tf.reshape(sep_conv0, [-1, size])
+#         print flatten 
+#         
+#         aggregated_model = getattr(video_level_models,
+#                                FLAGS.video_level_classifier_model)
+#         return aggregated_model().create_model(
+#             model_input=flatten,
+#             vocab_size=vocab_size,
+#             **unused_params)
+        fc0 = self.fc_layer(state0, 1024, "fc0")
+        print fc0
+        aggregated_model = getattr(video_level_models,
+                               FLAGS.video_level_classifier_model)
+        return aggregated_model().create_model(
+            model_input=fc0,
+            vocab_size=vocab_size,
+            **unused_params)
+#         rcnpool0 = self.max_pool(rcn0, 'rcnpool0')
+# 
+#         rcn1, state1 = self.stacked_rcn_layer(pool0, rcnpool0, outFilterSize*2, "rcn1")
+#         sepConv1 = self.separable_conv(state1, outFilterSize*2, vocab_size, "sep_conv1")
+#         gap1 = self.global_avg_pool(sepConv1, vocab_size, "gap1")
 #         print sepConv1
 #         print gap1
 #         fc1 = self.fc_layer(state1, vocab_size, "fc1")
@@ -323,14 +336,13 @@ class GruRcn:
 #         fcSum = tf.add_n(inputs=[fc0, fc1, fc2], name="fc_sum")
 #         divSum = tf.div(fcSum, 3, name="divide")
 
-        gapSum = tf.add_n(inputs=[gap0, gap1], name="fc_sum")
-        _, _height, _width, _channel = gapSum.get_shape().as_list() 
-        size = _height*_width*_channel
-        flattenGapSum = tf.reshape(gapSum, [-1, size])
-        print flattenGapSum
-        
-        predict = tf.nn.softmax(flattenGapSum, name="softmax") 
-        return {"predictions": predict}
+#         gapSum = tf.add_n(inputs=[gap0, gap1], name="fc_sum")
+#         _, _height, _width, _channel = gapSum.get_shape().as_list() 
+#         size = _height*_width*_channel
+#         flattenGapSum = tf.reshape(gapSum, [-1, size])
+#         print flattenGapSum
+#         predict = tf.nn.softmax(fc0, name="softmax") 
+#         return {"predictions": predict}
     
     def last_frame_layer(self, bottom, name):
         number = tf.range(0, tf.shape(self.seq_length)[0])
@@ -379,6 +391,32 @@ class GruRcn:
 
     def max_single_pool(self, bottom, name):
         return tf.nn.max_pool(bottom, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name=name)
+    
+    def _maxpool(self, input, name):
+        with tf.variable_scope(name):
+            _kH, _kW = self.__poolKernelSize
+            _sH, _sW = self.__poolStrideSize
+            return tf.nn.max_pool(input,
+                                  ksize=[1, _kH, _kW, 1],
+                                  strides=[1, _sH, _sW, 1],
+                                  padding='SAME',
+                                  name=name)
+
+    def _conv(self, input, in_channels, out_channels, name):
+        with tf.variable_scope(name):
+            filter_size_h, filter_size_w = self.__convKernelSize
+            
+            filt = tf.get_variable(name=name + "_filters", 
+                                   shape=[filter_size_h, filter_size_w, in_channels, out_channels], 
+                                   initializer=init_ops.random_normal_initializer(stddev=0.01))
+            conv_biases = tf.get_variable(name=name + "_biases", 
+                                          shape=[out_channels], 
+                                          initializer=init_ops.random_normal_initializer(stddev=0.01)) 
+
+            conv = tf.nn.conv2d(input, filt, [1, 1, 1, 1], padding='SAME')
+            bias = tf.nn.bias_add(conv, conv_biases)
+            relu = tf.nn.relu(bias)
+            return relu
 
     def conv_layer(self, bottom, in_channels, out_channels, name):
         with tf.variable_scope(name):
@@ -436,7 +474,7 @@ class GruRcn:
             size = _height*_width*_channel
             weights = tf.get_variable(name=name + "_weights", shape = [size, out_size], initializer=init_ops.random_normal_initializer(stddev=0.01))
             biases = tf.get_variable(name=name + "_biases", shape=[out_size], initializer=init_ops.random_normal_initializer(stddev=0.01)) 
-             
+            print weights
             x = tf.reshape(bottom, [-1, size])
             fc = tf.nn.bias_add(tf.matmul(x, weights), biases)
             return fc
