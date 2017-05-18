@@ -288,7 +288,7 @@ class GruRcn:
             self.__poolkernelSize = [2, 2]
             self.__poolStrideSize = [2, 2]
         
-        outFilterSize = 32
+        outFilterSize = 16
          
         _, state0 = self.rcn_layer(reshapedInput, outFilterSize, "rcn0")
 #         sep_conv0 = self.separable_conv(state0, outFilterSize, 4, "sep_conv0")
@@ -305,10 +305,8 @@ class GruRcn:
 #             vocab_size=vocab_size,
 #             **unused_params)
 #         pool0 = self._maxpool(state0, 'pool0')
-        fc0 = self.fc_layer(state0, 1024, "fc0")
-        print fc0
-        fc1 = self._fc(fc0, vocab_size, "fc1")
-        print fc1
+        fc0 = self.fc_layer(state0, vocab_size, "fc0")
+
 #         rcnpool0 = self.max_pool(rcn0, 'rcnpool0')
 # 
 #         rcn1, state1 = self.stacked_rcn_layer(pool0, rcnpool0, outFilterSize*2, "rcn1")
@@ -338,7 +336,7 @@ class GruRcn:
 #         size = _height*_width*_channel
 #         flattenGapSum = tf.reshape(gapSum, [-1, size])
 #         print flattenGapSum
-        predict = tf.nn.softmax(fc1, name="softmax") 
+        predict = tf.nn.softmax(fc0, name="softmax") 
         return {"predictions": predict}
     
     def last_frame_layer(self, bottom, name):
